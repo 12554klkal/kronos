@@ -28,11 +28,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import torch
-import json
-from openai import OpenAI
+import google.generativeai as genai
 
 # -------------------------------------------------------------------
-# 2. Page Configuration & TradingView Theme Injection
+# 2. Page Configuration & Light Theme Styling
 # -------------------------------------------------------------------
 st.set_page_config(
     page_title="Kronos Terminal | TradingView AI Analytics",
@@ -41,16 +40,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom TradingView CSS Theme
+# Custom TradingView Light CSS Theme
 st.markdown("""
 <style>
-    /* TradingView Dark Color Palette */
+    /* TradingView Light Color Palette */
     :root {
-        --tv-bg: #131722;
-        --tv-panel: #1e222d;
-        --tv-border: #2a2e39;
-        --tv-text: #d1d4dc;
-        --tv-text-muted: #787b86;
+        --tv-bg: #f8f9fd;
+        --tv-panel: #ffffff;
+        --tv-border: #e0e3eb;
+        --tv-text: #131722;
+        --tv-text-muted: #70757a;
         --tv-blue: #2962ff;
         --tv-green: #089981;
         --tv-red: #f23645;
@@ -73,21 +72,23 @@ st.markdown("""
     .tv-card {
         background-color: var(--tv-panel);
         border: 1px solid var(--tv-border);
-        border-radius: 6px;
+        border-radius: 8px;
         padding: 16px;
         margin-bottom: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     
     .tv-metric-title {
         color: var(--tv-text-muted);
-        font-size: 12px;
+        font-size: 11px;
         text-transform: uppercase;
+        font-weight: 600;
         letter-spacing: 0.5px;
     }
     .tv-metric-value {
         font-size: 20px;
         font-weight: 700;
-        color: #ffffff;
+        color: var(--tv-text);
         margin-top: 4px;
     }
     .tv-badge-up {
@@ -104,7 +105,7 @@ st.markdown("""
         background-color: var(--tv-blue) !important;
         color: #ffffff !important;
         border: none !important;
-        border-radius: 4px !important;
+        border-radius: 6px !important;
         font-weight: 600 !important;
         width: 100%;
     }
@@ -181,11 +182,6 @@ def compute_technical_indicators(df):
     data['MACD'] = ema12 - ema26
     data['MACD_Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
     
-    # Bollinger Bands
-    std20 = data['close'].rolling(window=20).std()
-    data['BB_Upper'] = data['SMA_20'] + (std20 * 2)
-    data['BB_Lower'] = data['SMA_20'] - (std20 * 2)
-    
     return data
 
 # -------------------------------------------------------------------
@@ -222,8 +218,8 @@ lookback_window = st.sidebar.slider("Context Window", 50, 512, 300, 10)
 sample_count = st.sidebar.slider("Monte Carlo Paths", 1, 25, 10, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧠 OpenAI Reasoning Agent")
-openai_api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password", help="Enter key to enable text-based market explanations.")
+st.sidebar.markdown("### ♊ Gemini Reasoning Agent")
+gemini_api_key = st.sidebar.text_input("Gemini API Key (Optional)", type="password", help="Enter Google Gemini API key to enable text-based market explanations.")
 
 # -------------------------------------------------------------------
 # 6. Fetch Asset Data & Full Fundamentals
@@ -232,7 +228,6 @@ openai_api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="passwo
 def fetch_asset_full_data(symbol, interval, period):
     ticker_obj = yf.Ticker(symbol)
     
-    # Fetch historical data
     df = ticker_obj.history(period=period, interval=interval)
     if df.empty:
         df = yf.download(symbol, period=period, interval=interval, progress=False)
@@ -258,7 +253,6 @@ def fetch_asset_full_data(symbol, interval, period):
         df['volume'] = 0.0
     df['amount'] = df['close'] * df['volume']
     
-    # Fetch trading view style fundamentals info
     info = {}
     try:
         info = ticker_obj.info
@@ -281,23 +275,23 @@ if df_raw is not None and not df_raw.empty:
     pct_change = (price_change / prev['close']) * 100
     badge_class = "tv-badge-up" if price_change >= 0 else "tv-badge-down"
     
-    # TradingView Header Bar
     asset_name = asset_info.get('longName', asset_info.get('shortName', ticker_input))
     sector_str = asset_info.get('sector', asset_info.get('quoteType', 'N/A'))
     industry_str = asset_info.get('industry', 'N/A')
     
+    # Light Mode Header Bar
     st.markdown(f"""
     <div class="tv-card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <span style="font-size: 26px; font-weight: 800; color: #ffffff;">{ticker_input}</span>
+                <span style="font-size: 26px; font-weight: 800; color: #131722;">{ticker_input}</span>
                 <span style="font-size: 16px; color: var(--tv-text-muted); margin-left: 10px;">{asset_name}</span>
                 <div style="font-size: 12px; color: var(--tv-text-muted); margin-top: 2px;">
                     {sector_str} • {industry_str} • Currency: {asset_info.get('currency', 'USD')}
                 </div>
             </div>
             <div style="text-align: right;">
-                <div style="font-size: 28px; font-weight: 800; color: #ffffff;">${latest['close']:,.2f}</div>
+                <div style="font-size: 28px; font-weight: 800; color: #131722;">${latest['close']:,.2f}</div>
                 <div class="{badge_class}" style="font-size: 15px;">
                     {price_change:+.2f} ({pct_change:+.2f}%)
                 </div>
@@ -324,7 +318,6 @@ if df_raw is not None and not df_raw.empty:
         with c2:
             run_btn = st.button("Generate Kronos Forecast Paths")
 
-        # Initialize chart state
         actual_lookback = min(lookback_window, len(df_tech))
         history_df = df_tech.tail(actual_lookback).reset_index(drop=True)
 
@@ -366,7 +359,7 @@ if df_raw is not None and not df_raw.empty:
                 'pred_change_pct': ((mean_forecast[-1] - history_df['close'].iloc[-1]) / history_df['close'].iloc[-1]) * 100
             }
 
-        # Build Plotly Candlestick Chart (TradingView Dark Theme)
+        # Build Plotly Candlestick Chart (Light Theme)
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25])
 
         # Candlesticks
@@ -380,8 +373,8 @@ if df_raw is not None and not df_raw.empty:
         ), row=1, col=1)
 
         # SMAs
-        fig.add_trace(go.Scatter(x=history_df['timestamps'], y=history_df['SMA_20'], line=dict(color='#2962ff', width=1), name="SMA 20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=history_df['timestamps'], y=history_df['SMA_50'], line=dict(color='#ff9800', width=1), name="SMA 50"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=history_df['timestamps'], y=history_df['SMA_20'], line=dict(color='#2962ff', width=1.5), name="SMA 20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=history_df['timestamps'], y=history_df['SMA_50'], line=dict(color='#ff9800', width=1.5), name="SMA 50"), row=1, col=1)
 
         # Volume Bar Chart
         colors = ['#089981' if row['close'] >= row['open'] else '#f23645' for _, row in history_df.iterrows()]
@@ -394,11 +387,11 @@ if df_raw is not None and not df_raw.empty:
         if 'kronos_results' in st.session_state:
             res = st.session_state['kronos_results']
             
-            # Paths
+            # Monte Carlo Paths
             for idx in range(res['close_paths'].shape[1]):
                 fig.add_trace(go.Scatter(
                     x=res['future_ts'], y=res['close_paths'][:, idx],
-                    mode='lines', line=dict(width=1, color='rgba(255, 165, 0, 0.25)'),
+                    mode='lines', line=dict(width=1, color='rgba(255, 152, 0, 0.3)'),
                     showlegend=False, hoverinfo='skip'
                 ), row=1, col=1)
 
@@ -406,21 +399,21 @@ if df_raw is not None and not df_raw.empty:
             fig.add_trace(go.Scatter(
                 x=list(res['future_ts']) + list(res['future_ts'])[::-1],
                 y=list(res['upper_bound']) + list(res['lower_bound'])[::-1],
-                fill='toself', fillcolor='rgba(255, 165, 0, 0.12)',
+                fill='toself', fillcolor='rgba(255, 152, 0, 0.15)',
                 line=dict(color='rgba(255,255,255,0)'), name="90% Confidence Band", hoverinfo='skip'
             ), row=1, col=1)
 
-            # Mean Forecast
+            # Mean Forecast Line
             fig.add_trace(go.Scatter(
                 x=res['future_ts'], y=res['mean_forecast'],
-                mode='lines+markers', line=dict(color='#ff9800', width=3),
+                mode='lines+markers', line=dict(color='#e65100', width=3),
                 name="Kronos Forecast Mean"
             ), row=1, col=1)
 
         fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#131722",
-            plot_bgcolor="#1e222d",
+            template="plotly_white",
+            paper_bgcolor="#f8f9fd",
+            plot_bgcolor="#ffffff",
             height=650,
             margin=dict(l=10, r=10, t=10, b=10),
             xaxis_rangeslider_visible=False,
@@ -429,18 +422,19 @@ if df_raw is not None and not df_raw.empty:
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # OpenAI AI Reasoning Explanation Module
+        # Gemini AI Reasoning Explanation Module
         if 'kronos_results' in st.session_state:
             st.markdown("---")
-            st.markdown("### 🧠 AI Market Reasoning Explanation")
+            st.markdown("### ♊ Gemini Market Reasoning Explanation")
             
             res = st.session_state['kronos_results']
             
-            if openai_api_key:
-                if st.button("Generate OpenAI Executive Market Explanation"):
-                    with st.spinner("Analyzing technical pattern & generating explanation..."):
+            if gemini_api_key:
+                if st.button("Generate Gemini Executive Explanation"):
+                    with st.spinner("Analyzing market patterns with Gemini..."):
                         try:
-                            client = OpenAI(api_key=openai_api_key)
+                            genai.configure(api_key=gemini_api_key)
+                            model = genai.GenerativeModel("gemini-1.5-flash")
                             
                             prompt = f"""
                             You are a senior quantitative financial analyst at TradingView. 
@@ -453,40 +447,35 @@ if df_raw is not None and not df_raw.empty:
                             - SMA 20: ${latest['SMA_20']:.2f} | SMA 50: ${latest['SMA_50']:.2f}
                             
                             Kronos AI Prediction Metrics:
-                            - Horizon: {pred_len} steps
+                            - Forecast Horizon: {pred_len} steps
                             - Forecast Target Mean: ${res['mean_forecast'][-1]:.2f}
                             - Predicted Return: {res['pred_change_pct']:+.2f}%
                             - 95th Percentile Bullish Target: ${res['upper_bound'][-1]:.2f}
                             - 5th Percentile Bearish Target: ${res['lower_bound'][-1]:.2f}
 
-                            Provide a concise 3-bullet point executive market breakdown explaining the potential price drivers, chart pattern setups (momentum, mean reversion, trend continuation), and risk factors that justify this trajectory.
+                            Provide a concise 3-bullet point executive market breakdown explaining potential price drivers, technical chart setups (momentum, mean reversion, trend continuation), and risk factors justifying this prediction.
                             """
 
-                            response = client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[{"role": "user", "content": prompt}],
-                                temperature=0.7
-                            )
+                            response = model.generate_content(prompt)
                             
                             st.markdown(f"""
                             <div class="tv-card">
-                                <h4 style="color: var(--tv-blue); margin-top: 0;">Analyst Explanation</h4>
-                                {response.choices[0].message.content}
+                                <h4 style="color: var(--tv-blue); margin-top: 0;">Gemini Analyst Market Insight</h4>
+                                {response.text}
                             </div>
                             """, unsafe_allow_html=True)
                         except Exception as err:
-                            st.error(f"OpenAI API Error: {err}")
+                            st.error(f"Gemini API Error: {err}")
             else:
-                st.info("💡 Tip: Enter an OpenAI API key in the sidebar to generate an automated executive explanation for this forecast.")
+                st.info("💡 Tip: Enter your Google Gemini API key in the sidebar to generate an automated executive explanation for this forecast.")
 
     # -------------------------------------------------------------------
     # TAB 2: TradingView Fundamentals & Asset Profile
     # -------------------------------------------------------------------
     with tab_fundamentals:
-        st.markdown("### 🏢 Complete TradingView Asset Profile")
+        st.markdown("### 🏢 Complete Asset Profile & Financials")
         
-        # Profile Summary
-        summary = asset_info.get('longBusinessSummary', 'No detailed business profile available for this ticker/symbol.')
+        summary = asset_info.get('longBusinessSummary', 'No detailed profile available for this ticker/symbol.')
         st.markdown(f"""
         <div class="tv-card">
             <h5 style="color: var(--tv-text-muted);">Business Profile</h5>
@@ -539,7 +528,7 @@ if df_raw is not None and not df_raw.empty:
                 <div class="tv-metric-value">{asset_info.get('profitMargins', 0)*100 if asset_info.get('profitMargins') else 'N/A'}%</div>
             </div>
             <div class="tv-card">
-                <div class="tv-metric-title">Beta (Volatily)</div>
+                <div class="tv-metric-title">Beta (Volatility)</div>
                 <div class="tv-metric-value">{asset_info.get('beta', 'N/A')}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -564,7 +553,7 @@ if df_raw is not None and not df_raw.empty:
     # TAB 3: Technical Indicators Overview
     # -------------------------------------------------------------------
     with tab_technicals:
-        st.markdown("### 📊 TradingView Oscillators & Moving Averages")
+        st.markdown("### 📊 TradingView Oscillators & Indicators")
 
         t1, t2, t3, t4 = st.columns(4)
         t1.metric("RSI (14)", f"{latest['RSI_14']:.2f}")
@@ -572,11 +561,10 @@ if df_raw is not None and not df_raw.empty:
         t3.metric("SMA 20", f"${latest['SMA_20']:.2f}")
         t4.metric("SMA 200", f"${latest['SMA_200']:.2f}")
 
-        # Technical Oscillators Chart
         fig_tech = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.5, 0.5])
         
         # RSI
-        fig_tech.add_trace(go.Scatter(x=df_tech['timestamps'], y=df_tech['RSI_14'], line=dict(color='#ab47bc', width=1.5), name="RSI 14"), row=1, col=1)
+        fig_tech.add_trace(go.Scatter(x=df_tech['timestamps'], y=df_tech['RSI_14'], line=dict(color='#8e24aa', width=1.5), name="RSI 14"), row=1, col=1)
         fig_tech.add_hline(y=70, line_dash="dash", line_color="#f23645", row=1, col=1)
         fig_tech.add_hline(y=30, line_dash="dash", line_color="#089981", row=1, col=1)
 
@@ -585,7 +573,7 @@ if df_raw is not None and not df_raw.empty:
         fig_tech.add_trace(go.Scatter(x=df_tech['timestamps'], y=df_tech['MACD_Signal'], line=dict(color='#ff9800', width=1.5), name="Signal"), row=2, col=1)
 
         fig_tech.update_layout(
-            template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#1e222d", height=450,
+            template="plotly_white", paper_bgcolor="#f8f9fd", plot_bgcolor="#ffffff", height=450,
             margin=dict(l=10, r=10, t=10, b=10)
         )
         st.plotly_chart(fig_tech, use_container_width=True)
