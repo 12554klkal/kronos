@@ -9,3 +9,4 @@ yfinance>=0.2.35
 einops>=0.7.0
 scipy>=1.11.0
 accelerate>=0.25.0
+openai>=1.0.0
